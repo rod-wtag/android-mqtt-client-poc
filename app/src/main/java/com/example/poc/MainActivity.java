@@ -1,5 +1,13 @@
 package com.example.poc;
 
+import org.eclipse.paho.client.mqttv3.IMqttActionListener;
+import org.eclipse.paho.client.mqttv3.IMqttToken;
+import org.eclipse.paho.client.mqttv3.MqttAsyncClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
+import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
+
 import android.os.Bundle;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
@@ -37,6 +45,9 @@ public class MainActivity extends AppCompatActivity {
     private MessageAdapter messageAdapter;
     private List<Message> messageList;
 
+    private MqttAsyncClient pahoClient;
+    private boolean isPaho = false; // To track which client is active
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -59,9 +70,11 @@ public class MainActivity extends AppCompatActivity {
         connectBtn.setOnClickListener(v -> {
             if (!isConnected) {
                 if (radioHiveMQ.isChecked()) {
+                    isPaho = false;
                     startMqttConnection();
                 } else {
-                    updateUI("Paho client is not yet implemented", "Paho client is not implemented yet");
+                    isPaho = true;
+                    startPahoConnection();
                 }
             } else {
                 disconnectMqtt();
@@ -81,7 +94,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void sendMessage() {
         String msg = editMessage.getText().toString().trim();
-        if (!msg.isEmpty() && client != null) {
+        if (msg.isEmpty()) return;
+
+        if (isPaho && pahoClient != null && pahoClient.isConnected()) {
+            publishPaho(msg);
+            addMessageToList(new Message(msg, true));
+            editMessage.setText("");
+        } else if (!isPaho && client != null) {
             publishMessage(msg);
             addMessageToList(new Message(msg, true));
             editMessage.setText("");
@@ -228,6 +247,102 @@ public class MainActivity extends AppCompatActivity {
 
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    private javax.net.ssl.SSLSocketFactory getPahoSslFactory() {
+        try {
+            // Reuse your existing logic for CA and Client Certs
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            InputStream caIn = getResources().openRawResource(R.raw.ca);
+            java.security.cert.Certificate ca = cf.generateCertificate(caIn);
+            caIn.close();
+
+            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            trustStore.load(null, null);
+            trustStore.setCertificateEntry("ca", ca);
+
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(trustStore);
+
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            InputStream clientIn = getResources().openRawResource(R.raw.client);
+            char[] password = "123456".toCharArray();
+            keyStore.load(clientIn, password);
+            clientIn.close();
+
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(keyStore, password);
+
+            // This is the specific Paho part:
+            javax.net.ssl.SSLContext sslContext = javax.net.ssl.SSLContext.getInstance("TLS");
+            sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new java.security.SecureRandom());
+
+            return sslContext.getSocketFactory();
+        } catch (Exception e) {
+            android.util.Log.e("PAHO_SSL", "Error: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private void startPahoConnection() {
+        try {
+            isPaho = true;
+            updateButtonState(true);
+
+            String serverUri = "ssl://10.0.2.2:8883";
+            String clientId = "paho-client-" + System.currentTimeMillis();
+
+            pahoClient = new MqttAsyncClient(serverUri, clientId, new MemoryPersistence());
+
+            MqttConnectOptions options = new MqttConnectOptions();
+            options.setSocketFactory(getPahoSslFactory());
+            options.setCleanSession(true);
+            options.setHttpsHostnameVerificationEnabled(false); // Same as hostnameVerifier(true)
+
+            pahoClient.connect(options, null, new IMqttActionListener() {
+                @Override
+                public void onSuccess(IMqttToken asyncActionToken) {
+                    isConnected = true;
+                    runOnUiThread(() -> {
+                        updateUI("Status: Paho Connected!", "Connected via mTLS");
+                        connectBtn.setText("Disconnect");
+                        connectBtn.setEnabled(true);
+                        connectBtn.setBackgroundColor(android.graphics.Color.RED);
+                    });
+                    subscribePaho();
+                }
+
+                @Override
+                public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    runOnUiThread(() -> {
+                        updateUI("Paho Failed: " + exception.getMessage(), null);
+                        updateButtonState(false);
+                    });
+                }
+            });
+        } catch (MqttException e) {
+            updateUI("Paho Error", e.getMessage());
+        }
+    }
+
+    private void publishPaho(String payload) {
+        try {
+            MqttMessage message = new MqttMessage(payload.getBytes(StandardCharsets.UTF_8));
+            pahoClient.publish("test/android", message);
+        } catch (MqttException e) {
+            updateUI(null, "Paho Send Failed: " + e.getMessage());
+        }
+    }
+
+    private void subscribePaho() {
+        try {
+            pahoClient.subscribe("test/android", 0, (topic, message) -> {
+                String payload = new String(message.getPayload(), StandardCharsets.UTF_8);
+                addMessageToList(new Message(payload, false));
+            });
+        } catch (MqttException e) {
+            updateUI(null, "Paho Sub Error");
         }
     }
 }
