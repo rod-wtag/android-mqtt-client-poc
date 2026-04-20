@@ -134,7 +134,7 @@ public class MainActivity extends AppCompatActivity {
 
             client = Mqtt5Client.builder()
                     .identifier("android-client-" + System.currentTimeMillis())
-                    .serverHost("10.0.2.2")
+                    .serverHost("staging-emqx.rhb-trenlink.cus.innotix.com")
                     .serverPort(8883)
                     .sslConfig(sslConfig)
                     .addDisconnectedListener(context -> {
@@ -218,7 +218,7 @@ public class MainActivity extends AppCompatActivity {
     private MqttClientSslConfig getMtlsConfig() {
         try {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            InputStream caIn = getResources().openRawResource(R.raw.ca);
+            InputStream caIn = getResources().openRawResource(R.raw.root_ca_new);
             java.security.cert.Certificate ca = cf.generateCertificate(caIn);
             caIn.close();
 
@@ -230,7 +230,7 @@ public class MainActivity extends AppCompatActivity {
             tmf.init(trustStore);
 
             KeyStore keyStore = KeyStore.getInstance("PKCS12");
-            InputStream clientIn = getResources().openRawResource(R.raw.client);
+            InputStream clientIn = getResources().openRawResource(R.raw.afe_client);
 
             char[] password = "123456".toCharArray();
             keyStore.load(clientIn, password);
