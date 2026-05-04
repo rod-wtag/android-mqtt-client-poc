@@ -9,6 +9,7 @@ import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
 import android.os.Bundle;
+import android.util.Log;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
@@ -17,6 +18,9 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import com.hivemq.client.mqtt.MqttClientSslConfig;
 import com.hivemq.client.mqtt.mqtt5.Mqtt5AsyncClient;
@@ -115,16 +119,45 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void publishMessage(String payload) {
-        client.publishWith()
-                .topic("test/android")
-                .payload(payload.getBytes(StandardCharsets.UTF_8))
-                .send()
-                .whenComplete((publishResult, throwable) -> {
-                    if (throwable != null) {
-                        updateUI(null, "Send Failed: " + throwable.getMessage());
-                    }
-                });
+    private void publishMessage(String content) {
+        try {
+            String payload = buildMqttPayload(content);
+            client.publishWith()
+                    .topic("train/19/chat")
+                    .payload(payload.getBytes(StandardCharsets.UTF_8))
+                    .send()
+                    .whenComplete((publishResult, throwable) -> {
+                        if (throwable != null) {
+                            updateUI(null, "Send Failed: " + throwable.getMessage());
+                            Log.d("ekhane", throwable.getMessage());
+                        }
+                    });
+        } catch (Exception e) {
+            updateUI(null, "JSON Error: " + e.getMessage());
+        }
+    }
+
+    private String buildMqttPayload(String content) throws Exception {
+        JSONObject json = new JSONObject();
+        json.put("sender_first_name", "Md.");
+        json.put("sender_last_name", "Mohiuddin");
+        json.put("isSelf", true);
+        json.put("sender_role", "zb");
+        json.put("sender_email", "md.mohiuddin@welldev.io");
+
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+        sdf.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        json.put("message_sent_at", sdf.format(new java.util.Date()));
+
+        json.put("id", (int) (System.currentTimeMillis() % 100000));
+        json.put("message_content", content);
+
+        JSONArray recipients = new JSONArray();
+        recipients.put("FDL");
+        recipients.put("LF");
+        json.put("recipients", recipients);
+
+        return json.toString();
     }
 
     private void startMqttConnection() {
@@ -146,11 +179,17 @@ public class MainActivity extends AppCompatActivity {
                     })
                     .buildAsync();
 
+            // Add simpleAuth here with your credentials
             client.connectWith()
+                    .simpleAuth()
+                    .username("ios_android")
+                    .password("".getBytes(StandardCharsets.UTF_8))
+                    .applySimpleAuth()
                     .send()
                     .whenComplete((connAck, throwable) -> {
                         if (throwable != null) {
                             runOnUiThread(() -> {
+                                Log.d("ekhane", "Failed: " + throwable.getMessage());
                                 updateUI("Failed: " + throwable.getMessage(), null);
                                 updateButtonState(false);
                             });
@@ -197,13 +236,26 @@ public class MainActivity extends AppCompatActivity {
 
     private void subscribeToTopic() {
         client.subscribeWith()
-                .topicFilter("test/android")
+                .topicFilter("train/19/chat")
                 .noLocal(true)
                 .callback(publish -> {
-                    String message = new String(publish.getPayloadAsBytes(), StandardCharsets.UTF_8);
-                    addMessageToList(new Message(message, false));
+                    String payload = new String(publish.getPayloadAsBytes(), StandardCharsets.UTF_8);
+                    addMessageToList(new Message(parseMqttPayload(payload), false));
                 })
                 .send();
+    }
+
+    private String parseMqttPayload(String payload) {
+        try {
+            JSONObject json = new JSONObject(payload);
+            String content = json.optString("message_content", payload);
+            String firstName = json.optString("sender_first_name", "");
+            String lastName = json.optString("sender_last_name", "");
+            String sender = (firstName + " " + lastName).trim();
+            return sender.isEmpty() ? content : sender + ": " + content;
+        } catch (Exception e) {
+            return payload;
+        }
     }
 
     private void updateUI(String status, String logLine) {
@@ -242,7 +294,7 @@ public class MainActivity extends AppCompatActivity {
             return MqttClientSslConfig.builder()
                     .keyManagerFactory(kmf)
                     .trustManagerFactory(tmf)
-                    .hostnameVerifier((hostname, session) -> true)
+//                    .hostnameVerifier((hostname, session) -> true)
                     .build();
 
         } catch (Exception e) {
@@ -326,11 +378,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void publishPaho(String payload) {
+    private void publishPaho(String content) {
         try {
+            String payload = buildMqttPayload(content);
             MqttMessage message = new MqttMessage(payload.getBytes(StandardCharsets.UTF_8));
             pahoClient.publish("test/android", message);
-        } catch (MqttException e) {
+        } catch (Exception e) {
             updateUI(null, "Paho Send Failed: " + e.getMessage());
         }
     }
@@ -339,7 +392,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             pahoClient.subscribe("test/android", 0, (topic, message) -> {
                 String payload = new String(message.getPayload(), StandardCharsets.UTF_8);
-                addMessageToList(new Message(payload, false));
+                addMessageToList(new Message(parseMqttPayload(payload), false));
             });
         } catch (MqttException e) {
             updateUI(null, "Paho Sub Error");
