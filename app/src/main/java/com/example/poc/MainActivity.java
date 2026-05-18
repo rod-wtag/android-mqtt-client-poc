@@ -11,9 +11,11 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.inputmethod.EditorInfo;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.RadioButton;
+import android.widget.Spinner;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -42,6 +44,11 @@ public class MainActivity extends AppCompatActivity {
     private TextView statusText;
     private Button connectBtn;
     private EditText editMessage;
+    private EditText editTrainNumber;
+    private Button subscribeBtn;
+    private Button endJourneyBtn;
+    private Spinner roleSpinner;
+    private Spinner senderRoleSpinner;
     private RadioButton radioHiveMQ;
     private boolean isConnected = false;
 
@@ -60,9 +67,26 @@ public class MainActivity extends AppCompatActivity {
         statusText = findViewById(R.id.statusText);
         connectBtn = findViewById(R.id.connectBtn);
         editMessage = findViewById(R.id.editMessage);
+        editTrainNumber = findViewById(R.id.editTrainNumber);
+        subscribeBtn = findViewById(R.id.subscribeBtn);
+        endJourneyBtn = findViewById(R.id.endJourneyBtn);
+        roleSpinner = findViewById(R.id.roleSpinner);
+        senderRoleSpinner = findViewById(R.id.senderRoleSpinner);
         radioHiveMQ = findViewById(R.id.radioHiveMQ);
         Button sendBtn = findViewById(R.id.sendBtn);
         messageRecyclerView = findViewById(R.id.messageRecyclerView);
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, new String[]{"LF", "ZV", "ZB", "ALL", "lf", "zv", "zb", "all"});
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        roleSpinner.setAdapter(adapter);
+
+        ArrayAdapter<String> senderRoleAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, new String[]{
+                "LF", "AD", "TEM", "BKI", "FDL", "ZV", "ZB",
+                "lf", "ad", "tem", "bki", "fdl", "zv", "zb"});
+        senderRoleAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        senderRoleSpinner.setAdapter(senderRoleAdapter);
 
         messageList = new ArrayList<>();
         messageAdapter = new MessageAdapter(messageList);
@@ -85,7 +109,22 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        subscribeBtn.setOnClickListener(v -> {
+            if (isConnected) {
+                if (isPaho) {
+                    subscribePaho();
+                } else {
+                    subscribeToTopic();
+                }
+                updateUI(null, "Subscribing to: " + getMqttTopic());
+            } else {
+                updateUI(null, "Please connect first");
+            }
+        });
+
         sendBtn.setOnClickListener(v -> sendMessage());
+
+        endJourneyBtn.setOnClickListener(v -> sendEndJourneyMessage());
 
         editMessage.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND) {
@@ -101,13 +140,24 @@ public class MainActivity extends AppCompatActivity {
         if (msg.isEmpty()) return;
 
         if (isPaho && pahoClient != null && pahoClient.isConnected()) {
-            publishPaho(msg);
+            publishPaho(msg, false);
             addMessageToList(new Message(msg, true));
             editMessage.setText("");
         } else if (!isPaho && client != null) {
-            publishMessage(msg);
+            publishMessage(msg, false);
             addMessageToList(new Message(msg, true));
             editMessage.setText("");
+        }
+    }
+
+    private void sendEndJourneyMessage() {
+        String msg = "journey ended";
+        if (isPaho && pahoClient != null && pahoClient.isConnected()) {
+            publishPaho(msg, true);
+            addMessageToList(new Message("System: " + msg, true));
+        } else if (!isPaho && client != null) {
+            publishMessage(msg, true);
+            addMessageToList(new Message("System: " + msg, true));
         }
     }
 
@@ -119,11 +169,11 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void publishMessage(String content) {
+    private void publishMessage(String content, boolean isSystem) {
         try {
-            String payload = buildMqttPayload(content);
+            String payload = buildMqttPayload(content, isSystem);
             client.publishWith()
-                    .topic("train/19/chat")
+                    .topic(getMqttTopic())
                     .payload(payload.getBytes(StandardCharsets.UTF_8))
                     .send()
                     .whenComplete((publishResult, throwable) -> {
@@ -137,27 +187,51 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String buildMqttPayload(String content) throws Exception {
+    private String buildMqttPayload(String content, boolean isSystem) throws Exception {
         JSONObject json = new JSONObject();
+        json.put("sender_unique_identifier", "android-" + System.currentTimeMillis());
+        json.put("sender_platform", "afe");
         json.put("sender_first_name", "Md.");
         json.put("sender_last_name", "Mohiuddin");
-        json.put("isSelf", true);
-        json.put("sender_role", "zb");
-        json.put("sender_email", "md.mohiuddin@welldev.io");
+        json.put("sender_role", senderRoleSpinner.getSelectedItem().toString());
 
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
         sdf.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
         json.put("message_sent_at", sdf.format(new java.util.Date()));
 
         json.put("id", (int) (System.currentTimeMillis() % 100000));
-        json.put("message_content", content);
+        json.put("content", content);
+        json.put("system_message", isSystem);
 
-        JSONArray recipients = new JSONArray();
-        recipients.put("FDL");
-        recipients.put("LF");
-        json.put("recipients", recipients);
+        if (isSystem) {
+            json.put("available_to_chat", false);
+        }
+
+        JSONArray roles = new JSONArray();
+        String selectedRole = roleSpinner.getSelectedItem().toString();
+        if (selectedRole.equalsIgnoreCase("ALL")) {
+            if (selectedRole.equals("ALL")) {
+                roles.put("LF");
+                roles.put("ZV");
+                roles.put("ZB");
+            } else {
+                roles.put("lf");
+                roles.put("zv");
+                roles.put("zb");
+            }
+        } else {
+            roles.put(selectedRole);
+        }
+        json.put("sent_for_roles", roles);
 
         return json.toString();
+    }
+
+    private String getMqttTopic() {
+        String trainNum = editTrainNumber.getText().toString().trim();
+        if (trainNum.isEmpty()) trainNum = "114";
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+        return "trains/" + sdf.format(new java.util.Date()) + "/" + trainNum;
     }
 
     private void startMqttConnection() {
@@ -201,7 +275,6 @@ public class MainActivity extends AppCompatActivity {
                                 connectBtn.setEnabled(true);
                                 connectBtn.setBackgroundColor(android.graphics.Color.RED);
                             });
-                            subscribeToTopic();
                         }
                     });
         } else {
@@ -236,7 +309,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void subscribeToTopic() {
         client.subscribeWith()
-                .topicFilter("train/19/chat")
+                .topicFilter(getMqttTopic())
                 .noLocal(true)
                 .callback(publish -> {
                     String payload = new String(publish.getPayloadAsBytes(), StandardCharsets.UTF_8);
@@ -248,10 +321,16 @@ public class MainActivity extends AppCompatActivity {
     private String parseMqttPayload(String payload) {
         try {
             JSONObject json = new JSONObject(payload);
-            String content = json.optString("message_content", payload);
+            String content = json.optString("content", json.optString("message_content", payload));
             String firstName = json.optString("sender_first_name", "");
             String lastName = json.optString("sender_last_name", "");
+            String role = json.optString("sender_role", "");
+
             String sender = (firstName + " " + lastName).trim();
+            if (sender.isEmpty() && !role.isEmpty()) {
+                sender = "[" + role.toUpperCase() + "]";
+            }
+
             return sender.isEmpty() ? content : sender + ": " + content;
         } catch (Exception e) {
             return payload;
@@ -270,7 +349,7 @@ public class MainActivity extends AppCompatActivity {
     private MqttClientSslConfig getMtlsConfig() {
         try {
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            InputStream caIn = getResources().openRawResource(R.raw.root_ca_new);
+            InputStream caIn = getResources().openRawResource(R.raw.root_ca);
             java.security.cert.Certificate ca = cf.generateCertificate(caIn);
             caIn.close();
 
@@ -362,7 +441,6 @@ public class MainActivity extends AppCompatActivity {
                         connectBtn.setEnabled(true);
                         connectBtn.setBackgroundColor(android.graphics.Color.RED);
                     });
-                    subscribePaho();
                 }
 
                 @Override
@@ -378,11 +456,11 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void publishPaho(String content) {
+    private void publishPaho(String content, boolean isSystem) {
         try {
-            String payload = buildMqttPayload(content);
+            String payload = buildMqttPayload(content, isSystem);
             MqttMessage message = new MqttMessage(payload.getBytes(StandardCharsets.UTF_8));
-            pahoClient.publish("test/android", message);
+            pahoClient.publish(getMqttTopic(), message);
         } catch (Exception e) {
             updateUI(null, "Paho Send Failed: " + e.getMessage());
         }
@@ -390,7 +468,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void subscribePaho() {
         try {
-            pahoClient.subscribe("test/android", 0, (topic, message) -> {
+            pahoClient.subscribe(getMqttTopic(), 0, (topic, message) -> {
                 String payload = new String(message.getPayload(), StandardCharsets.UTF_8);
                 addMessageToList(new Message(parseMqttPayload(payload), false));
             });
