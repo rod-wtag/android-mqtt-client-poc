@@ -385,7 +385,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             // Reuse your existing logic for CA and Client Certs
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            InputStream caIn = getResources().openRawResource(R.raw.ca);
+            InputStream caIn = getResources().openRawResource(R.raw.root_ca);
             java.security.cert.Certificate ca = cf.generateCertificate(caIn);
             caIn.close();
 
@@ -397,7 +397,7 @@ public class MainActivity extends AppCompatActivity {
             tmf.init(trustStore);
 
             KeyStore keyStore = KeyStore.getInstance("PKCS12");
-            InputStream clientIn = getResources().openRawResource(R.raw.client);
+            InputStream clientIn = getResources().openRawResource(R.raw.afe_client);
             char[] password = "123456".toCharArray();
             keyStore.load(clientIn, password);
             clientIn.close();
