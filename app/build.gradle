@@ -49,6 +49,8 @@ dependencies {
     implementation libs.hivemq.mqtt.client
     implementation libs.paho.mqtt
     implementation libs.paho.android
+    implementation libs.bouncycastle.bcprov
+    implementation libs.bouncycastle.bcpkix
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

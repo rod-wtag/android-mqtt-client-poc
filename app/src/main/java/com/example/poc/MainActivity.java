@@ -1,5 +1,7 @@
 package com.example.poc;
 
+import static com.example.poc.MtlsCertificateManager.parseCertificate;
+
 import org.eclipse.paho.client.mqttv3.IMqttActionListener;
 import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttAsyncClient;
@@ -30,8 +32,10 @@ import com.hivemq.client.mqtt.mqtt5.Mqtt5Client;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.security.KeyStore;
 import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -63,6 +67,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        generateAndLogCsr();
 
         statusText = findViewById(R.id.statusText);
         connectBtn = findViewById(R.id.connectBtn);
@@ -135,6 +141,21 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void generateAndLogCsr() {
+        new Thread(() -> {
+            try {
+                KeyPair keyPair = MtlsCertificateManager.getOrCreateHardwareKeyPair();
+                String csrPem = MtlsCertificateManager.generateCsrPem(keyPair, "afe-client");
+
+                String escapedCsr = csrPem.replace("\n", "\n");
+
+                Log.d("MQTT", "Fresh CSR (escaped, ready to paste):\n" + escapedCsr);
+            } catch (Exception e) {
+                Log.e("MQTT", "CSR generation failed", e);
+            }
+        }).start();
+    }
+
     private void sendMessage() {
         String msg = editMessage.getText().toString().trim();
         if (msg.isEmpty()) return;
@@ -179,7 +200,7 @@ public class MainActivity extends AppCompatActivity {
                     .whenComplete((publishResult, throwable) -> {
                         if (throwable != null) {
                             updateUI(null, "Send Failed: " + throwable.getMessage());
-                            Log.d("ekhane", throwable.getMessage());
+                            Log.d("MQTT", throwable.getMessage());
                         }
                     });
         } catch (Exception e) {
@@ -253,17 +274,19 @@ public class MainActivity extends AppCompatActivity {
                     })
                     .buildAsync();
 
+            Log.d("MQTT", "connection korte jachi");
+
             // Add simpleAuth here with your credentials
             client.connectWith()
                     .simpleAuth()
                     .username("ios_android")
-                    .password("".getBytes(StandardCharsets.UTF_8))
+                    .password("E7bfccFiahcsKAWwZ".getBytes(StandardCharsets.UTF_8))
                     .applySimpleAuth()
                     .send()
                     .whenComplete((connAck, throwable) -> {
                         if (throwable != null) {
                             runOnUiThread(() -> {
-                                Log.d("ekhane", "Failed: " + throwable.getMessage());
+                                Log.d("MQTT", "Failed: " + throwable.getMessage());
                                 updateUI("Failed: " + throwable.getMessage(), null);
                                 updateButtonState(false);
                             });
@@ -346,29 +369,25 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    // TEMP: paste your backend response PEMs here for the connectivity test
+    private static final String LEAF_CERT_PEM = "";
+
+    private static final String INTERMEDIATE_CERT_PEM = "";
+    private static final String ROOT_CA_PEM = "";
     private MqttClientSslConfig getMtlsConfig() {
         try {
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            InputStream caIn = getResources().openRawResource(R.raw.root_ca);
-            java.security.cert.Certificate ca = cf.generateCertificate(caIn);
-            caIn.close();
+            // 1. Make sure the hardware key pair exists
+            MtlsCertificateManager.getOrCreateHardwareKeyPair();
 
-            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-            trustStore.load(null, null);
-            trustStore.setCertificateEntry("ca", ca);
+            // 2. Sanity-check the chain BEFORE installing/using it
+            MtlsCertificateManager.verifyChainIntegrity(LEAF_CERT_PEM, INTERMEDIATE_CERT_PEM, ROOT_CA_PEM);
 
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(trustStore);
+            // 3. Attach the issued chain to the hardware key
+            MtlsCertificateManager.installIssuedCertificate(LEAF_CERT_PEM, INTERMEDIATE_CERT_PEM, ROOT_CA_PEM);
 
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
-            InputStream clientIn = getResources().openRawResource(R.raw.afe_client);
-
-            char[] password = "123456".toCharArray();
-            keyStore.load(clientIn, password);
-            clientIn.close();
-
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            kmf.init(keyStore, password);
+            // 4. Build factories
+            KeyManagerFactory kmf = MtlsCertificateManager.buildKeyManagerFactory();
+            TrustManagerFactory tmf = MtlsCertificateManager.buildTrustManagerFactory(ROOT_CA_PEM);
 
             return MqttClientSslConfig.builder()
                     .keyManagerFactory(kmf)
@@ -377,7 +396,25 @@ public class MainActivity extends AppCompatActivity {
                     .build();
 
         } catch (Exception e) {
+            Log.e("MQTT", "Failed to build SSL config", e);
             return null;
+        }
+    }
+
+    public static void verifyChainIntegrity(String leafCertPem, String intermediateCertPem, String rootCaPem) {
+        try {
+            X509Certificate leaf = parseCertificate(leafCertPem);
+            X509Certificate intermediate = parseCertificate(intermediateCertPem);
+            X509Certificate root = parseCertificate(rootCaPem);
+
+            leaf.verify(intermediate.getPublicKey());
+            Log.d("MQTT", "Leaf signature verified OK against intermediate");
+
+            intermediate.verify(root.getPublicKey());
+            Log.d("MQTT", "Intermediate signature verified OK against root");
+
+        } catch (Exception e) {
+            Log.e("MQTT", "Chain verification FAILED", e);
         }
     }
 
@@ -411,7 +448,7 @@ public class MainActivity extends AppCompatActivity {
 
             return sslContext.getSocketFactory();
         } catch (Exception e) {
-            android.util.Log.e("PAHO_SSL", "Error: " + e.getMessage());
+            android.util.Log.e("MQTT", "Error: " + e.getMessage());
             return null;
         }
     }
