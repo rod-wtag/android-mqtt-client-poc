@@ -280,7 +280,7 @@ public class MainActivity extends AppCompatActivity {
             client.connectWith()
                     .simpleAuth()
                     .username("ios_android")
-                    .password("E7bfccFiahcsKAWwZ".getBytes(StandardCharsets.UTF_8))
+                    .password("".getBytes(StandardCharsets.UTF_8))
                     .applySimpleAuth()
                     .send()
                     .whenComplete((connAck, throwable) -> {
